@@ -15,8 +15,12 @@
 package endpoint
 
 import (
+	"strconv"
+
+	"github.com/cilium/cilium/pkg/bandwidth"
 	"github.com/cilium/cilium/pkg/eventqueue"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
 
 	"github.com/sirupsen/logrus"
@@ -178,4 +182,56 @@ func (ev *EndpointPolicyVisibilityEvent) Handle(res chan interface{}) {
 		err: nil,
 	}
 	return
+}
+
+// EndpointPolicyBandwidthEvent contains all fields necessary to update
+// the Pod's bandwidth policy.
+type EndpointPolicyBandwidthEvent struct {
+	ep     *Endpoint
+	annoCB AnnotationsResolverCB
+}
+
+// Handle handles the policy bandwidth update.
+func (ev *EndpointPolicyBandwidthEvent) Handle(res chan interface{}) {
+	var bps uint64
+
+	e := ev.ep
+	if err := e.lockAlive(); err != nil {
+		// If the endpoint is being deleted, we don't need to
+		// update its bandwidth policy.
+		res <- &EndpointRegenerationResult{
+			err: nil,
+		}
+		return
+	}
+	defer func() {
+		e.unlock()
+	}()
+
+	bandwidthEgress, err := ev.annoCB(e.K8sNamespace, e.K8sPodName)
+	if err != nil || !option.Config.EnableBandwidthManager {
+		res <- &EndpointRegenerationResult{
+			err: err,
+		}
+		return
+	}
+	e.getLogger().Infof("Updating Endpoint bandwidth from %v to %s bps", e.bps, bandwidthEgress)
+	if bandwidthEgress != "" {
+		bps, err = strconv.ParseUint(bandwidthEgress, 10, 64)
+		if err == nil {
+			err = (&bandwidth.ThrottleBPFMap{}).Update(e.ID, bps)
+		}
+	} else {
+		err = (&bandwidth.ThrottleBPFMap{}).Delete(e.ID)
+	}
+	if err != nil {
+		res <- &EndpointRegenerationResult{
+			err: err,
+		}
+		return
+	}
+	e.bps = bps
+	res <- &EndpointRegenerationResult{
+		err: nil,
+	}
 }

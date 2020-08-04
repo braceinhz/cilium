@@ -159,6 +159,9 @@ type Endpoint struct {
 	// information of the endpoint has changed
 	identityRevision int
 
+	// bps is the egress rate of the endpoint
+	bps uint64
+
 	// mac is the MAC address of the endpoint
 	//
 	mac mac.MAC // Container MAC address.
